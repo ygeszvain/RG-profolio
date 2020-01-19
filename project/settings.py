@@ -1,6 +1,6 @@
 import os
 
-REPO_NAME = "RG-profolio"  # Used for FREEZER_BASE_URL
+REPO_NAME = "RGProfolio"  # Used for FREEZER_BASE_URL
 DEBUG = True
 
 # Assumes the app is located in the same directory
