@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+#{% extends "base.html" %}
 {% block content %}
 
 <h2>Posts</h2>
@@ -10,7 +10,5 @@
       </a>- {{ page.meta.date }}</li>
   {% endfor %}
 </ul>
-
-<img src="{{ url_for('static', filename='RG.jpg') }}" />
 
 {% endblock %}
