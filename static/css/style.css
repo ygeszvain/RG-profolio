@@ -25,6 +25,15 @@ nav ul, nav ul li {
 
 }
 
+h1{
+
+}
+
+h2{
+  font-size: 20px;
+  color: grey;
+}
+
 nav ul li a {
   text-decoration: none;
   font-weight: 400;

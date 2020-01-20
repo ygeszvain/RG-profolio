@@ -14,4 +14,5 @@ def page(path):
     # `path` is the filename of a page, without the file extension
     # e.g. "first-post"
     page = pages.get_or_404(path)
+    template = page.meta.get('template', 'page.html')
     return render_template('page.html', page=page)
