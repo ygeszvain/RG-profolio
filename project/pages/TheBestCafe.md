@@ -1,4 +1,4 @@
-title: Finding the Best Ramen Restaurant in Milwaukee
+title: Finding the Best Cafe (Lavender) in Milwaukee
 date: 1/19/2020
 
 <a href="https://github.com/ygeszvain/projects/blob/master/Scrape_Yelp_Reviews_Cafe.ipynb">Source Code</a><a></a>
