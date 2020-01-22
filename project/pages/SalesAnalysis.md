@@ -1,5 +1,5 @@
 title: A Simple Historical Sales Data Analysis
-date: 4/17/2019
+date: 04/17/2019
 
 A sales history was analyzed with simple heatmap, boxplot, and trend.
 
