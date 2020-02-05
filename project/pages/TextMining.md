@@ -8,4 +8,4 @@ Overall, we weren’t that successful in predicating box office results, partly 
 We recommend that this data be continually added to as new franchise films are released to increase its predictive power. Additionally, if the regression results suggest a movie may underperform expectations, we recommend that the studio involved review the reasons why (i.e. month) and determine if the potential downside is worth changing the release date.
 
 
-<a href="{{ url_for('static', filename='project_files/BoxOfficeAnalysis.docx') }}">Project Document</a><a></a>
+<a href="https://github.com/ygeszvain/RGProfolio/blob/master/static/project_files/BoxOfficeAnalysis.docx">Project Document</a><a></a>

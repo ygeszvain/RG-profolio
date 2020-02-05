@@ -6,5 +6,5 @@ This group project aims to prepare and collect a dataset that is valuable for da
 
 
 
-<a href="{{ url_for('static', filename='project_files/CompanySalesProcurementAnalysis_PPT.pptx') }}">Presentation Deck</a><a></a>
-<a href="{{ url_for('static', filename='project_files/CompanySalesProcurementAnalysis.docx') }}">Project Document</a><a></a>
+<a href="https://github.com/ygeszvain/RGProfolio/blob/master/static/project_files/CompanySalesProcurementAnalysis_PPT.pptx">Presentation Deck</a><a></a><br>
+<a href="https://github.com/ygeszvain/RGProfolio/blob/master/static/project_files/CompanySalesProcurementAnalysis.docx">Project Document</a><a></a>
