@@ -1,0 +1,1179 @@
+---
+title: 'FIN 654 Financial Analytics - Final Project; Randy Geszvain'
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    source_code: embed
+    theme: "spacelab"
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+library(ggplot2)
+library(flexdashboard)
+library(shiny)
+library(QRM)
+library(qrmdata)
+library(xts)
+library(zoo)
+library(plotly)
+#library(ggfortify)
+library(psych)
+
+rm(list = ls())
+# PAGE: Exploratory Analysis
+getdataql <- function (q_code, col_no, clabel) {
+  require(Quandl)
+  mydata.ee <- Quandl(q_code,
+                      api_key="tzyKE21cvbzCY8pxDnPg")
+  data.ee <-  
+    data.frame(as.Date(mydata.ee[, 1]),
+               mydata.ee[, col_no])
+  head(data.ee)
+  colnames(data.ee) <- c("DATE", clabel)
+  return(data.ee)
+}
+
+# Check and write data into a csv file one-time
+datafile <- "data_m3.csv"
+if(!file.exists(datafile)) {
+  data.au <- getdataql("LBMA/GOLD", 3, "GOLD")
+  data.ag <- getdataql("LBMA/SILVER", 2, "SLVR")
+  data.pt <- getdataql("LPPM/PLAT", 2, "PLAT")
+  data1 <- merge(data.au, data.ag, 
+                 by.x = "DATE", by.y = "DATE")
+  data2 <- merge(data1, data.pt, 
+                 by.x = "DATE", by.y = "DATE")
+  data2$DATE <- as.character(data2$DATE, 
+                             format = "%m/%d/%Y")
+  write.table (data2, file=datafile, sep=",",
+               row.names=F)
+}
+data <- na.omit(read.csv("data_m3.csv", header = TRUE))
+# Compute log differences percent using as.matrix to force numeric type
+data.r <- diff(log(as.matrix(data[, -1]))) * 100
+# Create size and direction
+size <- na.omit(abs(data.r)) # size is indicator of volatility
+#head(size)
+colnames(size) <- paste(colnames(size),".size", sep = "") # Teetor
+direction <- ifelse(data.r > 0, 1, ifelse(data.r < 0, -1, 0)) # another indicator of volatility
+colnames(direction) <- paste(colnames(direction),".dir", sep = "")
+# Convert into a time series object: 
+# 1. Split into date and rates
+dates <- as.Date(data$DATE[-1], "%m/%d/%Y")
+dates.chr <- as.character(data$DATE[-1])
+str(dates.chr)
+values <- cbind(data.r, size, direction)
+# for dplyr pivoting and ggplot2 need a data frame also known as "tidy data"
+data.df <- data.frame(dates = dates, returns = data.r, size = size, direction = direction)
+data.df.nd <- data.frame(dates = dates.chr, returns = data.r, size = size, direction = direction, stringsAsFactors = FALSE) 
+#non-coerced dates for subsetting on non-date columns
+# 2. Make an xts object with row names equal to the dates
+data.xts <- na.omit(as.xts(values, dates)) #order.by=as.Date(dates, "%d/%m/%Y")))
+#str(data.xts)
+data.zr <- as.zooreg(data.xts)
+returns <- data.xts
+
+# PAGE: Market risk 
+corr.rolling <- function(x) {	
+  dim <- ncol(x)	
+  corr.r <- cor(x)[lower.tri(diag(dim), diag = FALSE)]	
+  return(corr.r)	
+}
+
+ALL.r <- data.xts[, 1:3]
+window <- 90 #reactive({input$window})
+corr.returns <- rollapply(ALL.r, width = window, corr.rolling, align = "right", by.column = FALSE)
+#colnames(corr.returns) <- c("gold & silver", "gold & platinum", "silver & platinum")
+corr.returns.df <- data.frame(Date = index(corr.returns), gold.silver = corr.returns[,1], gold.platinum = corr.returns[,2], silver.platinum = corr.returns[,3])
+
+# Market dependencies
+library(matrixStats)
+R.corr <- apply.monthly(as.xts(ALL.r), FUN = cor)
+R.vols <- apply.monthly(ALL.r, FUN = colSds) # from MatrixStats	
+# Form correlation matrix for one month 	
+R.corr.1 <- matrix(R.corr[20,], nrow = 3, ncol = 3, byrow = FALSE)	
+rownames(R.corr.1) <- colnames(ALL.r[,1:3])	
+colnames(R.corr.1) <- rownames(R.corr.1)	
+R.corr <- R.corr[, c(2, 3, 6)]
+colnames(R.corr) <- colnames(corr.returns) 	
+colnames(R.vols) <- c("gold.vols", "silver.vols", "platinum.vols")	
+R.corr.vols <- na.omit(merge(R.corr, R.vols))
+gold.vols <- as.numeric(R.corr.vols[,"gold.vols"])	
+silver.vols <- as.numeric(R.corr.vols[,"silver.vols"])	
+platinum.vols <- as.numeric(R.corr.vols[,"platinum.vols"])
+library(quantreg)
+# hist(rho.fisher[, 1])
+gold.corrs <- R.corr.vols[,1]
+#hist(gold.corrs)
+taus <- seq(.05,.95,.05)	# Roger Koenker UI Bob Hogg and Allen Craig
+fit.rq.gold.silver <- rq(gold.corrs ~ silver.vols, tau = taus)	
+fit.lm.gold.silver <- lm(gold.corrs ~ silver.vols)	
+#' Some test statements	
+#summary(fit.rq.gold.silver, se = "boot")
+#'
+#summary(fit.lm.gold.silver, se = "boot")
+#plot(summary(fit.rq.gold.silver), parm = "silver.vols", main = "gold-silver correlation sensitivity to silver volatility") #, ylim = c(-0.1 , 0.1))	
+
+```
+
+
+
+Background
+=======================================================================
+
+Row
+-----------------------------------------------------------------------
+
+### Purpose, Process, Product
+
+Corey Oil, Ltc is looking to invest in the metal market. The company owner wants to understand whether to start trading in metals or investing in a metal trading stock option. Currently, the owner is evaluating the possibility to buy gold, silver, or platinum. The purpose of this project is to find the best investment option via a series analysis including data exploration, data analysis, volatility analysis, and portfolio analysis. Through these analyses, the owner will have the understanding of how the historical data would provide insights to the final investing decision. 
+
+### Problem
+
+Corey Oil, Ltc wants to optimize their portfolio in the metals markets with entry into the metal trading options.  They have allocated \$100 million to purchase metals. The company wants us to:
+
+1.	Retrieve and begin to analyze data about potential commodities to diversify
+2.	Compare different investment options including gold, silver, and platinum
+3.  Propose the investment package along with statistical analysis
+
+### Data and analysis to inform the decision
+
+- Spot market prices of gold, silver, and platinum
+- gold and silver: correlation
+- gold and platinum: correlation
+- silver and platinum: Correlation
+- gold and silver: Correlation sensitivity to silver dependency
+- All together: correlations and volaitlities among these indicators
+- Cross-section of rolling correlation will be visualize correlation
+
+
+Row
+-----------------------------------------------------------------------
+
+### Method
+
+Identify the optimal combination of Gold, Silver, and FNV stock to trade or invest in
+
+1.	Product:
+    •	Product: gold, silver, and platinum
+2.	Investor: Corey Oil, ltc.
+
+
+### Key business questions
+
+1.	How are the prices of gold, silver, platinum? What are the trends and values?
+2.	Which investment option has a better portfolio?
+
+
+Approach
+-----------------------------------------------------------------------
+
+
+### History speaks
+
+- We will develop the *value at risk* and *expected shortfall* metrics from the historical simulated distributions of risk factors.
+- Given these factors we will combine them into a portfolio and calculate their losses. 
+- With the loss distribution in hand we can compute the risk measures. - This approach is nonparametric.
+
+- We can then posit high quantile thresholds and explore risk measures the in the tails of the distributions.
+
+First we set the tolerance level $\Large\alpha$, for example, equal to 95\%. This would mean that a decision maker would not tolerate loss in  more than $\Large 1-\alpha$, or 5\%. of all risk scenarios under consideration.
+
+We define the VaR as the quantile for probability $\Large\alpha \in (0,1)$, as
+
+$$
+\Large
+VaR_{\alpha} (X) = inf \{ x \in R: F(x) \geq \alpha \},
+$$
+
+which means find the greatest lower bound of loss $\Large x$ (what the symbol $\Large inf$ = _infimum_ means in English), such that the cumulative probability of $\Large x$ is greater than or equal to $\Large \alpha$. 
+
+Using the $\Large VaR_{\alpha}$ definition we can also define $\Large ES$ as
+
+$$
+\Large
+ES_{\alpha} = E [X \lvert X \geq VaR_{\alpha}],
+$$
+
+where $\Large ES$ is "expected shortfall" and $\Large E$ is the expectation operator, also known as the "mean." Again, in English, the expected shortfall is the average of all losses greater than the loss at a $\Large VaR$ associated with probability $\Large \alpha$, and $\Large ES \geq VaR$.
+
+Data
+=======================================================================
+
+Row
+-----------------------------------------------------------------------
+
+### Data Definitions
+
+- *Gold*: daily gold price (\$/per metric ton)
+- *Silver*: daily silver prices (\$/per metric ton)
+- *Platinum *: daily platinum prices (\$/per metric ton)
+
+
+### Historical data 1990-2018
+
+	•	silver has experienced a number of spikes in price and magnitude percentage change.
+	•	gold is less volatile in terms of price and magnitude percentage change.
+	•	platinum has lower price percentage changes; there was a huge change in the third quarter of 2000.
+
+
+### Data and markets
+
+- Quandl for data
+
+
+Row 
+-----------------------------------------------------------------------
+
+### Metals Price Percent Changes
+```{r}
+renderPlotly({
+  library(ggplot2)
+  #library(ggfortify)
+  library(plotly)
+  #title.chg1 <- "Metals Price Percent Changes"
+  #title.chg2 <- "Size of Metals Price Percent Changes"
+  p <- autoplot.zoo(data.xts[,1:3]) # + ggtitle(title.chg1) #+ ylim(-5, 5)
+  ggplotly(p)
+})
+```
+
+### Size of Metals Price Percent Changes
+
+```{r}
+renderPlotly({
+  #title.chg1 <- "metals Price Percent Changes"
+  #title.chg2 <- "Size of metals Price Percent Changes"
+  p <- autoplot.zoo(abs(data.xts[,1:3])) # + ggtitle(title.chg2) #+ ylim(-5, 5)
+  ggplotly(p)
+  })
+```
+
+Data Exploration
+=======================================================================
+
+Column {.tabset}
+-----------------------------------------------------------------------
+
+### Metal Price Data
+
+>Below shows a portion of the metal price data.
+
+```{r, echo=TRUE}
+head(data, 20)
+```
+
+```{r, echo=TRUE}
+tail(data, 20)
+```
+
+### Data Structure
+
+>Data structure shows each column and data type in metal price data
+
+```{r}
+str(data)
+```
+
+### Data Summary - Gold Price
+
+>Below provides a statistical insight for GOLD metal prices - A postive skew means that it has a long tail in the positive direction. This high a kurtosis means a pretty heavy tail.
+
+```{r}
+summary(data$GOLD)
+
+data_moments <- function(data) {
+    require(moments)
+    mean.r <- mean(data)
+    sd.r <- sd(data)
+    median.r <- median(data)
+    skewness.r <- skewness(data)
+    kurtosis.r <- kurtosis(data)
+    result <- data.frame(mean = mean.r, 
+        std_dev = sd.r, median = median.r, 
+        skewness = skewness.r, kurtosis = kurtosis.r)
+    return(result)
+}
+
+data_moments(data$GOLD)
+```
+
+### Data Summary - Silver Price
+
+>Below provides a statistical insight for Silver metal prices - A postive skew means that it has a long tail in the positive direction. This high a kurtosis means a pretty heavy tail.
+
+```{r}
+summary(data$SLVR)
+
+data_moments <- function(data) {
+    require(moments)
+    mean.r <- mean(data)
+    sd.r <- sd(data)
+    median.r <- median(data)
+    skewness.r <- skewness(data)
+    kurtosis.r <- kurtosis(data)
+    result <- data.frame(mean = mean.r, 
+        std_dev = sd.r, median = median.r, 
+        skewness = skewness.r, kurtosis = kurtosis.r)
+    return(result)
+}
+
+data_moments(data$SLVR)
+```
+
+### Data Summary - Platinum Price
+
+>Below provides a statistical insight for Platinum metal prices - A postive skew means that it has a long tail in the positive direction. This high a kurtosis means a pretty heavy tail.
+
+```{r}
+summary(data$PLAT)
+
+data_moments <- function(data) {
+    require(moments)
+    mean.r <- mean(data)
+    sd.r <- sd(data)
+    median.r <- median(data)
+    skewness.r <- skewness(data)
+    kurtosis.r <- kurtosis(data)
+    result <- data.frame(mean = mean.r, 
+        std_dev = sd.r, median = median.r, 
+        skewness = skewness.r, kurtosis = kurtosis.r)
+    return(result)
+}
+
+data_moments(data$PLAT)
+```
+
+### Plots - Gold
+
+>Data Plot shows the trend of historical data for GOLD prices
+
+```{r}
+hist(data[,2], main = paste("Histogram of Metal Prices - Gold"), xlab = "Gold Prices")
+plot(data[,2], type = "l", main = "Gold Price Trend")
+```
+
+### Plots - Silver
+
+>Data Plot shows the trend of historical data for Silver prices
+
+```{r}
+hist(data[,3], main = paste("Histogram of Metal Prices - Silver"), xlab = "Silver Prices")
+plot(data[,3], type = "l", main = "Silver Price Trend")
+```
+
+### Plots - Platinum
+
+>Data Plot shows the trend of historical data for Platinum prices
+
+```{r}
+hist(data[,3], main = paste("Histogram of Metal Prices - Platinum"), xlab = "Platinum Prices")
+plot(data[,3], type = "l", main = "Platinum Price Trend")
+```
+
+
+Exploratory Analysis
+=======================================================================
+
+Inputs {.sidebar}
+-----------------------------------------------------------------------
+A quantile divides the returns distribution into two groups. For example 75\% of all returns may fall below a return value of 10\%. The distribution is thus divided into returns above 10\% and below 10\% at the 75\% quantile.
+
+Pull slide to the right to measure the risk of returns at desired quantile levels. The minimum risk quantile is 75\%. The maximum risk quantile is 99\%.
+
+
+```{r}
+sliderInput("alpha.q", label = "Risk Measure quantiles (%):",
+            min = 0.75, max = 0.99, value = 0.75, step = 0.01)
+```
+
+
+Row
+-----------------------------------------------------------------------
+
+### Gold Value at Risk
+
+```{r}
+#threshold <- reactive({input$threshold.q}) #BE SURE that {} included 
+renderValueBox({
+  alpha <- reactive({ifelse(input$alpha.q>1,0.99,ifelse(input$alpha.q<0,0.001,input$alpha.q))})
+  returns1 <- returns[,1]
+  colnames(returns1) <- "Returns" #kluge to coerce column name for df below
+  q <- quantile(returns1,alpha())
+  VaR.hist <- q
+  valueBox(round(VaR.hist, 2),
+           icon = "fa-ship", color = "light-blue")
+})
+```
+
+### Silver Value at Risk
+
+```{r}
+#threshold <- reactive({input$threshold.q}) #BE SURE that {} included 
+renderValueBox({
+  alpha <- reactive({ifelse(input$alpha.q>1,0.99,ifelse(input$alpha.q<0,0.001,input$alpha.q))})
+  returns1 <- returns[,2]
+  colnames(returns1) <- "Returns" #kluge to coerce column name for df below
+  q <- quantile(returns1,alpha())
+  VaR.hist <- q
+  valueBox(round(VaR.hist, 2),
+           icon = "fa-ship", color = "light-blue")
+})
+```
+
+### Platinum Value at Risk
+
+```{r}
+#threshold <- reactive({input$threshold.q}) #BE SURE that {} included 
+renderValueBox({
+  alpha <- reactive({ifelse(input$alpha.q>1,0.99,ifelse(input$alpha.q<0,0.001,input$alpha.q))})
+  returns1 <- returns[,3]
+  colnames(returns1) <- "Returns" #kluge to coerce column name for df below
+  q <- quantile(returns1,alpha())
+  VaR.hist <- q
+  valueBox(round(VaR.hist, 2),
+           icon = "fa-ship", color = "light-blue")
+})
+```
+
+
+Row {.tabset .tabset-fade}
+-----------------------------------------------------------------------
+
+### gold metals Returns Distribution
+
+```{r}
+renderPlotly({
+  returns1 <- returns[,1]
+  colnames(returns1) <- "Returns" #kluge to coerce column name for df
+  returns1.df <- data.frame(Returns = returns1[,1], Distribution = rep("Historical", each = length(returns1)))
+  
+  alpha <- reactive({ifelse(input$alpha.q>1,0.99,ifelse(input$alpha.q<0,0.001,input$alpha.q))})
+  
+  # Value at Risk
+  VaR.hist <- quantile(returns1,alpha())
+  VaR.text <- paste("Value at Risk =", round(VaR.hist, 2))
+  
+  # Determine the max y value of the desity plot.
+  # This will be used to place the text above the plot
+  VaR.y <- max(density(returns1.df$Returns)$y)
+  
+  # Expected Shortfall
+  ES.hist <- median(returns1[returns1 > VaR.hist])
+  ES.text <- paste("Expected Shortfall =", round(ES.hist, 2))
+  
+  p <- ggplot(returns1.df, aes(x = Returns, fill = Distribution)) + 
+    geom_density(alpha = 0.5) + 
+    geom_vline(aes(xintercept = VaR.hist), linetype = "dashed", size = 1, color = "firebrick1") + 
+    geom_vline(aes(xintercept = ES.hist), size = 1, color = "firebrick1") +
+    annotate("text", x = 2+ VaR.hist, y = VaR.y*1.05, label = VaR.text) +
+    annotate("text", x = 1.5+ ES.hist, y = VaR.y*1.1, label = ES.text) +     scale_fill_manual( values = "dodgerblue4")
+  ggplotly(p)
+  })
+```
+
+###  silver Returns Distribution
+
+```{r}
+renderPlotly({
+  returns1 <- returns[,2]
+  colnames(returns1) <- "Returns" #kluge to coerce column name for df
+  returns1.df <- data.frame(Returns = returns1[,1], Distribution = rep("Historical", each = length(returns1)))
+  
+alpha <- reactive({ifelse(input$alpha.q>1,0.99,ifelse(input$alpha.q<0,0.001,input$alpha.q))})
+  
+  # Value at Risk
+  VaR.hist <- quantile(returns1,alpha())
+  VaR.text <- paste("Value at Risk =", round(VaR.hist, 2))
+  
+  # Determine the max y value of the desity plot.
+  # This will be used to place the text above the plot
+  VaR.y <- max(density(returns1.df$Returns)$y)
+  
+  # Expected Shortfall
+  ES.hist <- median(returns1[returns1 > VaR.hist])
+  ES.text <- paste("Expected Shortfall =", round(ES.hist, 2))
+  
+  p <- ggplot(returns1.df, aes(x = Returns, fill = Distribution)) + 
+    geom_density(alpha = 0.5) + 
+    geom_vline(aes(xintercept = VaR.hist), linetype = "dashed", size = 1, color = "firebrick1") + 
+    geom_vline(aes(xintercept = ES.hist), size = 1, color = "firebrick1") +
+    annotate("text", x = 2+VaR.hist, y = VaR.y*1.05, label = VaR.text) +
+    annotate("text", x = 1.5+ES.hist, y = VaR.y*1.1, label = ES.text)+     scale_fill_manual( values = "dodgerblue4")
+  ggplotly(p)
+})
+```
+
+### platinum Returns Distribution
+
+```{r}
+renderPlotly({
+  returns1 <- returns[,3]
+  colnames(returns1) <- "Returns" #kluge to coerce column name for df
+  returns1.df <- data.frame(Returns = returns1[,1], Distribution = rep("Historical", each = length(returns1)))
+  ggplot(returns1.df, aes(x = Returns, fill = Distribution)) + geom_density(alpha = 0.8)
+  
+  alpha <- reactive({ifelse(input$alpha.q>1,0.99,ifelse(input$alpha.q<0,0.001,input$alpha.q))})
+  
+  # Value at Risk
+  VaR.hist <- quantile(returns1,alpha())
+  VaR.text <- paste("Value at Risk =", round(VaR.hist, 2))
+  
+  # Determine the max y value of the desity plot.
+  # This will be used to place the text above the plot
+  VaR.y <- max(density(returns1.df$Returns)$y)
+  
+  # Expected Shortfall
+  ES.hist <- median(returns1[returns1 > VaR.hist])
+  ES.text <- paste("Expected Shortfall =", round(ES.hist, 2))
+  
+  p <- ggplot(returns1.df, aes(x = Returns, fill = Distribution)) + 
+    geom_density(alpha = 0.5) + 
+    geom_vline(aes(xintercept = VaR.hist), linetype = "dashed", size = 1, color = "firebrick1") + 
+    geom_vline(aes(xintercept = ES.hist), size = 1, color = "firebrick1") +
+    annotate("text", x = 2+VaR.hist, y = VaR.y*1.05, label = VaR.text) +
+    annotate("text", x = 1.5+ES.hist, y = VaR.y*1.1, label = ES.text) +     scale_fill_manual( values = "dodgerblue4")
+  ggplotly(p)
+})
+
+```
+
+### 
+```{r }
+renderPlotly({
+  acf(coredata(data.xts[,1:3])) # returns
+})
+```
+
+```{r}
+renderPlotly({
+  acf(coredata(data.xts[,4:5])) # sizes
+})
+```
+
+### Statistics
+```{r}
+## data_moments function
+## INPUTS: r vector
+## OUTPUTS: list of scalars (mean, sd, median, skewness, kurtosis)
+data_moments <- function(data){
+  library(moments)
+  library(matrixStats)
+  mean.r <- colMeans(data)
+  median.r <- colMedians(data)
+  sd.r <- colSds(data)
+  IQR.r <- colIQRs(data)
+  skewness.r <- skewness(data)
+  kurtosis.r <- kurtosis(data)
+  result <- data.frame(mean = mean.r, median = median.r, std_dev = sd.r, IQR = IQR.r, skewness = skewness.r, kurtosis = kurtosis.r)
+  return(result)
+}
+# Run data_moments()
+answer <- data_moments(data.xts[, 1:3])
+# Build pretty table
+answer <- round(answer, 4)
+knitr::kable(answer)
+```
+
+
+Market Risk
+=======================================================================
+
+Row
+-----------------------------------------------------------------------
+
+### gold, silver, platinum Observations
+	•	Platinum is closer to the mean
+	•	Volatilities ranking: silver, platinum, gold
+	•	There is a strong correlation (.79) between platinum and silver. 
+	•	Ranking correlation among three metals: gold vs silver: 0.67; gold vs platinum: 0.51; silver vs platinum: 0.79. The higher number means stronger correlation.
+	•	According to empirical loss analysis, when value at risk = 9.76, the expected shortfall = 12.72. Expected shortfall (ES) is a risk measure—a concept used in the field of financial risk measurement to evaluate the market risk or credit risk of a portfolio. The "expected shortfall at q% level" is the expected return on the portfolio in the worst  q q% of cases.
+
+
+### gold, silver, platinum relationships
+
+```{r}
+#library(psych)
+pairs.panels(corr.returns.df)
+```
+
+
+row {.tabset }
+-----------------------------------------------------------------------
+
+### gold and silver (90 day rolling correlation)
+
+```{r }
+renderPlotly({
+  p <- ggplot(corr.returns.df, aes(x = Date, y = gold.silver)) + geom_line()
+  ggplotly(p)
+})
+```
+
+### gold and platinum (90 day rolling correlation)
+
+```{r }
+renderPlotly({
+  p <- ggplot(corr.returns.df, aes(x = Date, y = gold.platinum)) + geom_line()
+  ggplotly(p)
+})
+```
+
+### silver and platinum (90 day rolling correlation)
+
+```{r }
+renderPlotly({
+  p <- ggplot(corr.returns.df, aes(x = Date, y = silver.platinum)) + geom_line()
+  ggplotly(p)
+})
+```
+
+### 30 day within-sample correlations and volatilities
+
+```{r}
+plot.zoo(R.corr.vols, main= "Monthly Correlations and Volatilities")
+```
+
+### gold - silver Dependency
+
+```{r}
+renderPlot({ 
+  plot(summary(fit.rq.gold.silver), parm = "silver.vols", main = "gold-silver correlation sensitivity to silver volatility")
+})
+```
+
+- Assume that the loss density $\Large f_L$ is strictly positive so that the distribution function of loss possesses a diffentiable inverse and change variables so that $\Large v = q_u(L) = F_L(u)$ the cumulative loss distribution. Then 
+
+$$
+\Large
+\frac{dv}{du} = f^{-1}(v)
+$$
+and we can compute
+$$
+\Large
+\frac{\partial r_{ES}^{\alpha}}{\partial \lambda_i}(1) = \frac{1}{1-\alpha}\int_{q_{\alpha}(L)}^{\infty}E(L_i | L=v)f_L(v)dv = \frac{1}{1-\alpha}\int_{\alpha}^1E(L_i \, | \, L \geq q_{\alpha}(L))
+$$
+- (Finally) we have the expected shortfall contribution of a line of business $\Large i$ as
+$$
+\Large
+C_i^{ES} = E(L_i | L \geq VaR_{\alpha}(L))
+$$
+
+### Getting practical
+
+- Using price returns we can compute loss. 
+- Weights for each are defined as the value of the positions in each risk factor. 
+- We can compute this as the notional (in tonnes equivalent for this market) times the last observed price.
+- Losses for a barrel equivalent of the three commodities are computed back into the sample relative to the most recently observed prices
+
+### Empirical loss
+
+```{r }
+## Now for Loss Analysis
+# Get last prices
+price.last <- as.numeric(tail(data[, -1], n=1))
+# Specify the positions
+position.rf <- c(1/3, 1/3, 1/3)
+# And compute the position weights
+w <- position.rf * price.last
+# Fan these  the length and breadth of the risk factor series
+weights.rf <- matrix(w, nrow=nrow(data.r), ncol=ncol(data.r), byrow=TRUE)
+#head(rowSums((exp(data.r/100)-1)*weights.rf), n=3)
+## We need to compute exp(x) - 1 for very small x: expm1 accomplishes this
+#head(rowSums((exp(data.r/100)-1)*weights.rf), n=4)
+loss.rf <- -rowSums(expm1(data.r/100) * weights.rf)
+loss.rf.df <- data.frame(Loss = loss.rf, Distribution = rep("Historical", each = length(loss.rf)))
+## Simple Value at Risk and Expected Shortfall
+alpha.tolerance <- .95
+VaR.hist <- quantile(loss.rf, probs=alpha.tolerance, names=FALSE)
+## Just as simple Expected shortfall
+ES.hist <- median(loss.rf[loss.rf > VaR.hist])
+VaR.text <- paste("Value at Risk =\n", round(VaR.hist, 2)) # ="VaR"&c12
+ES.text <- paste("Expected Shortfall \n=", round(ES.hist, 2))
+title.text <- paste(round(alpha.tolerance*100, 0), "% Loss Limits")
+renderPlotly({
+  p <- ggplot(loss.rf.df, aes(x = Loss, fill = Distribution)) + geom_histogram(alpha = 0.8) + geom_vline(aes(xintercept = VaR.hist), linetype = "dashed", size = 1, color = "blue") + geom_vline(aes(xintercept = ES.hist), size = 1, color = "blue") + annotate("text", x = VaR.hist, y = 40, label = VaR.text) + annotate("text", x = ES.hist, y = 20, label = ES.text) + xlim(0, 500) + ggtitle(title.text)
+  ggplotly(p)
+})
+```
+
+Extremes
+=======================================================================
+Row {.tabset}
+-----------------------------------------------------------------------
+### Let's go to extremes
+
+- All along we have been stylizing financial returns, commodities and exchange rates, as skewed and with thick tails.
+- We next go on to an extreme tail distribution called the Generalized Pareto Distribution (GPD). 
+- For very high thresholds, GPD not only well describes behavior in excess of the threshold, but the mean excess over the threshold is linear in the threshold. 
+- From this we get more intuition around the use of expected shortfall as a coherent risk measure. 
+- In recent years we well exceeded all Gaussian and Student's t thresholds.
+
+For a random variate $\Large x$, this distribution is defined for the shape parameters $\Large \xi \geq 0$ as:
+
+$$
+\Large
+g(x; \xi \geq 0) = 1- (1 + x \xi/\beta)^{-1/\xi}
+$$
+
+
+and when the shape parameter $\Large \xi = 0$, the GPD becomes the exponential distribution dependent only on the scale parameter $\beta$:
+
+$$
+\Large
+g(x; \xi = 0) = 1 - exp(-x/\beta).
+$$
+
+Now for one reason for GPD's notoriety...
+
+- If $\Large u$ is an upper (very high) threshold, then the excess of threshold function for the GPD is
+
+$$
+\Large
+e(u) = \frac{\beta + \xi u}{1 - \xi}.
+$$
+
+- This simple measure is _linear_ in thresholds. 
+- It will allow us to visualize where rare events begin (see McNeil, Embrechts, and Frei (2015, chapter 5)). 
+- we often exploit this property when we look at operational loss data.
+- Here is a mean excess loss plot for the `loss.rf` data. If there is a straight-line relationship after a threshold, then we have some evidence for the existence of a GPD for the tail.
+
+### Mean excess loss
+
+```{r}
+# mean excess plot to determine thresholds for extreme event management
+data <- as.vector(loss.rf) # data is purely numeric
+umin <-  min(data)         # threshold u min
+umax <-  max(data) - 0.1   # threshold u max
+nint <- 100                # grid length to generate mean excess plot
+grid.0 <- numeric(nint)    # grid store
+e <- grid.0                # store mean exceedances e
+upper <- grid.0            # store upper confidence interval
+lower <- grid.0            # store lower confidence interval
+u <- seq(umin, umax, length = nint) # threshold u grid
+alpha <- 0.95                  # confidence level
+for (i in 1:nint) {
+    data <- data[data > u[i]]  # subset data above thresholds
+    e[i] <- mean(data - u[i])  # calculate mean excess of threshold
+    sdev <- sqrt(var(data))    # standard deviation
+    n <- length(data)          # sample size of subsetted data above thresholds
+    upper[i] <- e[i] + (qnorm((1 + alpha)/2) * sdev)/sqrt(n) # upper confidence interval
+    lower[i] <- e[i] - (qnorm((1 + alpha)/2) * sdev)/sqrt(n) # lower confidence interval
+  }
+mep.df <- data.frame(threshold = u, threshold.exceedances = e, lower = lower, upper = upper)
+loss.excess <- loss.rf[loss.rf > u]
+# Voila the plot => you may need to tweak these limits!
+renderPlotly({
+p <- ggplot(mep.df, aes( x= threshold, y = threshold.exceedances)) + geom_line() + geom_line(aes(x = threshold, y = lower), colour = "red") + geom_line(aes(x = threshold,  y = upper), colour = "red") + annotate("text", x = 400, y = 200, label = "upper 95%") + annotate("text", x = 200, y = 0, label = "lower 5%")
+ggplotly(p)
+})
+```
+
+### GPD fits and starts
+
+```{r}
+#library(QRM)
+alpha.tolerance <- 0.95
+u <- quantile(loss.rf, alpha.tolerance , names=FALSE)
+fit <- fit.GPD(loss.rf, threshold=u) # Fit GPD to the excesses
+xi.hat <- fit$par.ests[["xi"]] # fitted xi
+beta.hat <- fit$par.ests[["beta"]] # fitted beta
+data <- loss.rf
+n.relative.excess <- length(loss.excess) / length(loss.rf) # = N_u/n
+VaR.gpd <- u + (beta.hat/xi.hat)*(((1-alpha.tolerance) / n.relative.excess)^(-xi.hat)-1) 
+ES.gpd <- (VaR.gpd + beta.hat-xi.hat*u) / (1-xi.hat)
+n.relative.excess <- length(loss.excess) / length(loss.rf) # = N_u/n
+VaR.gpd <- u + (beta.hat/xi.hat)*(((1-alpha.tolerance) / n.relative.excess)^(-xi.hat)-1) 
+ES.gpd <- (VaR.gpd + beta.hat-xi.hat*u) / (1-xi.hat)
+# Plot away
+renderPlotly({
+  VaRgpd.text <- paste("GPD: Value at Risk =", round(VaR.gpd, 2))
+  ESgpd.text <- paste("Expected Shortfall =", round(ES.gpd, 2))
+  title.text <- paste(VaRgpd.text, ESgpd.text, sep = " ")
+  loss.plot <- ggplot(loss.rf.df, aes(x = Loss, fill = Distribution)) + geom_density(alpha = 0.2)
+  loss.plot <- loss.plot + geom_vline(aes(xintercept = VaR.gpd), colour = "blue", linetype = "dashed", size = 0.8)
+  loss.plot <- loss.plot + geom_vline(aes(xintercept = ES.gpd), colour = "blue", size = 0.8) 
+  #+ annotate("text", x = 300, y = 0.0075, label = VaRgpd.text, colour = "blue") + annotate("text", x = 300, y = 0.005, label = ESgpd.text, colour = "blue")
+  loss.plot <- loss.plot + xlim(0,500) + ggtitle(title.text)
+  ggplotly(loss.plot)
+})
+```
+
+### Confidence and risk measures
+
+```{r}
+showRM(fit, alpha = 0.99, RM = "ES", method = "BFGS")
+```
+
+
+Optimization
+==========================================================
+row {.tabset}
+----------------------------------------------------------
+
+### If that wasn't enough...
+
+Stylized market facts indicate
+
+- Allocation across various component of loss drivers requires both body and tail considerations
+- Pessisimistic risk measurement requires some sort of distortion measure to assess the probability of good and bad news
+
+So that ...
+
+- Bassett et al.(2004) show that the mean-expected shortfall efficient portfolio problem is equivalent to a quantile regression with linear constraints.
+- Enlarge scope of expected utility from monetary and probabality to include an assessment (distortion) of probability.
+- Choquet integrals build on Lebesgue measures by inflating or deflating the probabilities by the rank order of the outcomes.
+- Expected shortfall is an example of a Choquet, rank-ordered, criterion.
+
+### Pessimism reigns
+
+- A risk measure $\Large \rho$ is pessistic if, for some probability measure $\Large \phi$ on $\Large [0,1]$, 
+$$
+\Large
+\rho(L) = \int_0^1 \rho_{u}(L) \phi(u) du.
+$$
+
+- For expected shortfall, $\Large \phi(u) = (1-\alpha)^{-1}I_{(u\geq\alpha)}$: equal weight is placed on all quantiles beyond the $\alpha$-quantile.
+- Suppose we have a loss portfolio with position weights $\Large \pi$ and losses $X$ so that total loss is $\Large L = X\,'\pi$ with mean loss $\Large \mu(L)$. Let's choose loss weights to minimize
+$$
+\Large
+min_{\pi}\,[\rho_{\alpha}(L) - \lambda \mu(L)] \,\, s.t.\, \mu(L)=\mu_0, \,\, 1^T\pi = 1
+$$
+
+where the weights add up to 1 and we try to achieve a minimum return $\Large \mu_0$.
+
+- Taking this formulation to a sample version for $\Large n$ observations of losses, we get
+$$
+\Large
+min_{\beta, \xi}\sum_{k=1}^m \, \sum_{i=1}^n \, \nu_k \rho_{\alpha}(X_{i1}-\sum_{j=2}^p (x_{i1}-x_{ij}\beta_{j})-\xi_k))
+$$
+
+$$
+\Large
+s.t.\, \bar{X}\,'\pi(\beta) = \mu_0
+$$
+
+- In this approach, there are $\Large m$ weights $\Large \nu$ that pull together $\Large m$ different sets of portfolio weightings. The $\Large \xi$ terms represent $\Large m$ different intercepts, one for each $\Large \nu_k$ weight. 
+- There are $\Large p$ assets or loss categories here. We use the first asset, $\Large i = 1$ as the "numerarire" or benchmark asset. We measure returns on assets 2 to $\Large p$ relative to the first asset. The weights for assets 2 to $\Large p$ are the regression coeffients $\Large \beta$. the weight for the first asset uses the adding up constraint so that
+
+$$
+\Large
+\pi_1 = 1 - \sum_{j=2}^p \pi_j
+$$
+
+
+The corresponding Markowitz (1952) approach is
+$$
+\Large
+min_{\beta, \xi} \, \sum_{i=1}^n (X_{i1}-\sum_{j=2}^p (x_{i1}-x_{ij})\beta_{j}-\xi))^2
+$$
+subject to the constraint
+
+$$
+\Large
+s.t.\, \bar{X}\,'\pi = \mu_0
+$$
+
+- We model distortions using weighted quantiles.
+- The Choquet criterion ends up using a weighted average of quantile allocations across assessed probabilities to express preferences.
+- Mimimize a weighted sum of quantile regression objective functions using the specified $\alpha$ quantiles. 
+- The model permits distinct intercept parameters at each of the specified taus, but the slope parameters are constrained to be the same for all $\Large \alpha$s. 
+- This estimator was originally suggested to the Roger Koenker by Bob Hogg in one of his famous blue book notes of 1979. 
+- The algorithm used to solve the resulting linear programming problems is either the Frisch Newton algorithm described in Portnoy and Koenker (1997), or the closely related algorithm described in Koenker and Ng(2002) that handles linear inequality constraints. 
+- Linear inequality constraints can be imposed.
+
+```{r  mysize=TRUE, size='\\footnotesize', echo = TRUE}
+library(quantreg)
+x <- data.r/100
+n <- nrow(x)
+p <- ncol(x)
+alpha <-  c(0.1, 0.3) # quantiles
+w <-  c(0.3, 0.7) # distortion weights
+lambda <- 100 # Lagrange multiplier for adding up constraint
+m <- length(alpha)
+# error handling: if (length(w) != m) stop("length of w doesn't match length of alpha")
+xbar <- apply(x, 2, mean)
+mu.0 <-  mean(xbar)
+y <- x[, 1] #set numeraire
+r <- c(lambda * (xbar[1] - mu.0), -lambda * (xbar[1] - mu.0))
+X <- x[, 1] - x[, -1]
+R <- rbind(lambda * (xbar[1] - xbar[-1]), -lambda * (xbar[1] - xbar[-1]))
+R <- cbind(matrix(0, nrow(R), m), R)
+f <- rq.fit.hogg(X, y, taus = alpha, weights = w, R = R, r = r)
+fit <- f$coefficients
+# transform regression coeff to portfolio weights
+pihat <- c(1 - sum(fit[-(1:m)]), fit[-(1:m)]) 
+x <- as.matrix(x)
+yhat <- x %*% pihat # predicted 
+etahat <- quantile(yhat, alpha)
+muhat <- mean(yhat)
+qrisk <- 0
+for (i in 1:length(alpha)) qrisk <- qrisk + w[i] * sum(yhat[yhat < etahat[i]])/(n * alpha[i])
+qrisk
+pihat
+```
+
+
+### Extreme frontier finance
+
+```{r }
+mu.0 <- xbar
+mu.P <- seq(-.0005, 0.0015, length = 100) ## set of 300 possible target portfolio returns
+qrisk.P <-  mu.P ## set up storage for quantile risks of portfolio returns
+weights <-  matrix(0, nrow=300, ncol = ncol(data.r)) ## storage for portfolio weights
+colnames(weights) <- names(data.r)
+for (i in 1:length(mu.P))
+{
+  mu.0 <-  mu.P[i]  ## target returns
+  result <- qrisk(x, mu = mu.0)
+  qrisk.P[i] <- -result$qrisk # convert to loss risk already weighted across alphas
+  weights[i,] <-  result$pihat
+}
+qrisk.mu.df <- data.frame(qrisk.P = qrisk.P, mu.P = mu.P )
+mu.P <- qrisk.mu.df$mu.P
+mu.free <-  0.0003 ## input value of risk-free interest rate
+sharpe <- ( mu.P-mu.free)/qrisk.P ## compute Sharpe's ratios
+ind <-  (sharpe == max(sharpe)) ## Find maximum Sharpe's ratio
+ind2 <-  (qrisk.P == min(qrisk.P)) ## find the minimum variance portfolio
+ind3 <-  (mu.P > mu.P[ind2]) ## find the efficient frontier (blue)
+col.P <- ifelse(mu.P > mu.P[ind2], "blue", "grey")
+weights.extr <- weights[ind,] # for use in calculating tengency risk measures
+qrisk.mu.df$col.P <- col.P
+renderPlotly({
+  p <- ggplot(qrisk.mu.df, aes(x = qrisk.P, y = mu.P, group = 1)) + geom_line(aes(colour= col.P, group = col.P)) + scale_colour_identity()  
+  p <- p + geom_point(aes(x = 0, y = mu.free), colour = "red")
+  options(digits=3)
+  p <- p + geom_abline(intercept = mu.free, slope = (mu.P[ind]-mu.free)/qrisk.P[ind], colour = "red")
+  p <- p + geom_point(aes(x = qrisk.P[ind], y = mu.P[ind])) 
+  p <- p + geom_point(aes(x = qrisk.P[ind2], y = mu.P[ind2])) 
+  ggplotly(p)
+})
+```
+
+### Portfolio Analytics: the Markowitz model: default
+
+```{r }
+library(quadprog)
+
+R <- returns[,1:3]/100
+quantile_R <- quantile(R[,1], 0.95)
+#R <- subset(R, gold > quantile_R, select = gold:platinum)
+names.R <- colnames(R)
+mean.R <-  apply(R,2,mean)
+cov.R <-  cov(R)
+sd.R <-  sqrt(diag(cov.R)) ## remember these are in daily percentages
+#library(quadprog)
+Amat <-  cbind(rep(1,3),mean.R)  ## set the equality constraints matrix
+mu.P <- seq(min(mean.R), max(mean.R), length = 300)  ## set of 300 possible target portfolio returns
+#mu.P <- seq(0.5*quantile_R, max(R), length = 100)  ## set of 300 possible target portfolio returns
+sigma.P <-  mu.P ## set up storage for std dev's of portfolio returns
+weights <-  matrix(0, nrow=300, ncol = ncol(R)) ## storage for portfolio weights
+colnames(weights) <- names.R
+for (i in 1:length(mu.P))
+{
+  bvec <- c(1,mu.P[i])  ## constraint vector
+  result <- solve.QP(Dmat=2*cov.R,dvec=rep(0,3),Amat=Amat,bvec=bvec,meq=2)
+  sigma.P[i] <- sqrt(result$value)
+  weights[i,] <- result$solution
+}
+sigma.mu.df <- data.frame(sigma.P = sigma.P, mu.P = mu.P )
+mu.free <-  .00011 ## input value of daily risk-free interest rate
+sharpe <- ( mu.P-mu.free)/sigma.P ## compute Sharpe's ratios
+ind <-  (sharpe == max(sharpe)) ## Find maximum Sharpe's ratio
+ind2 <-  (sigma.P == min(sigma.P)) ## find the minimum variance portfolio
+ind3 <-  (mu.P > mu.P[ind2]) ## finally the efficient frontier
+col.P <- ifelse(mu.P > mu.P[ind2], "blue", "grey")
+sigma.mu.df$col.P <- col.P
+renderPlotly({
+p <- ggplot(sigma.mu.df, aes(x = sigma.P, y = mu.P, group = 1)) + geom_line(aes(colour=col.P, group = col.P)) + scale_colour_identity() # + xlim(0, max(sd.R*1.1))  + ylim(0, max(mean.R)*1.1) + 
+p <- p + geom_point(aes(x = 0, y = mu.free), colour = "red")
+options(digits=4)
+p <- p + geom_abline(intercept = mu.free, slope = (mu.P[ind]-mu.free)/sigma.P[ind], colour = "red")
+p <- p + geom_point(aes(x = sigma.P[ind], y = mu.P[ind], pch="*")) 
+p <- p + geom_point(aes(x = sigma.P[ind2], y = mu.P[ind2], pch="-")) ## show min var portfolio
+p <- p + annotate("text", x = sd.R[1], y = mean.R[1], label = names.R[1]) + annotate("text", x = sd.R[2], y = mean.R[2], label = names.R[2]) + annotate("text", x = sd.R[3], y = mean.R[3], label = names.R[3])
+p	### ggplotly(p)
+})
+```
+
+### Portfolio Analytics: the Markowitz model: no short
+
+```{r }
+library(quadprog)
+
+R <- returns[,1:3]/100
+quantile_R <- quantile(R[,1], 0.95)
+#R <- subset(R, gold > quantile_R, select = gold:platinum)
+names.R <- colnames(R)
+mean.R <-  apply(R,2,mean)
+cov.R <-  cov(R)
+sd.R <-  sqrt(diag(cov.R)) ## remember these are in daily percentages
+#library(quadprog)
+Amat <-  cbind(rep(1,3),mean.R,diag(1,3))  ## set the equality constraints matrix
+mu.P <- seq(min(mean.R), max(mean.R), length = 300)  ## set of 300 possible target portfolio returns
+#mu.P <- seq(0.5*quantile_R, max(R), length = 100)  ## set of 300 possible target portfolio returns
+sigma.P <-  mu.P ## set up storage for std dev's of portfolio returns
+weights.x <-  matrix(0, nrow=300, ncol = ncol(R)) ## storage for portfolio weights.x
+colnames(weights.x) <- names.R
+for (i in 1:length(mu.P))
+{
+  bvec <- c(1,mu.P[i],rep(0,3))  ## constraint vector
+  result <- solve.QP(Dmat=2*cov.R,dvec=rep(0,3),Amat=Amat,bvec=bvec,meq=2)
+  sigma.P[i] <- sqrt(result$value)
+  weights.x[i,] <- result$solution
+}
+sigma.mu.df <- data.frame(sigma.P = sigma.P, mu.P = mu.P )
+mu.free <-  .0001 ## input value of daily risk-free interest rate
+sharpe <- ( mu.P-mu.free)/sigma.P ## compute Sharpe's ratios
+inx <-  (sharpe == max(sharpe)) ## Find maximum Sharpe's ratio
+inx2 <-  (sigma.P == min(sigma.P)) ## find the minimum variance portfolio
+indx3 <-  (mu.P > mu.P[inx2]) ## finally the efficient frontier
+col.P <- ifelse(mu.P > mu.P[inx2], "blue", "grey")
+sigma.mu.df$col.P <- col.P
+renderPlotly({
+p <- ggplot(sigma.mu.df, aes(x = sigma.P, y = mu.P, group = 1)) + geom_line(aes(colour=col.P, group = col.P)) + scale_colour_identity() # + xlim(0, max(sd.R*1.1))  + ylim(0, max(mean.R)*1.1) + 
+p <- p + geom_point(aes(x = 0, y = mu.free), colour = "red")
+options(digits=4)
+p <- p + geom_abline(intercept = mu.free, slope = (mu.P[inx]-mu.free)/sigma.P[inx], colour = "red")
+p <- p + geom_point(aes(x = sigma.P[inx], y = mu.P[inx], pch="+")) 
+p <- p + geom_point(aes(x = sigma.P[inx2], y = mu.P[inx2], pch="-")) ## show min var portfolio
+p <- p + annotate("text", x = sd.R[1], y = mean.R[1], label = names.R[1]) + annotate("text", x = sd.R[2], y = mean.R[2], label = names.R[2]) + annotate("text", x = sd.R[3], y = mean.R[3], label = names.R[3])
+p	### ggplotly(p)
+})
+```
+
+
+
+Conclusion
+=======================================================================
+
+row 
+-------------------------------------------------------------------------
+
+### Skills and Tools
+
+Packages to strengthen the analytical work - 
+ggplot, scales, quadprog, quantreg, shiny, flexdashboard, qrmdata, xts, matrixStats, zoo, QRM, plotly, and psych
+
+Skills that enable reading, cleaning, and formatting of data are the following -
+
+1. Read.csv() to read the csv file.
+2. na.omit()to remove any missing data.
+3. str() to review data structure.
+4. as.numeric() to convert data to numbers.
+5. as.date() to convert data to dates.
+6. paste() to concatenate vectors after converting to character.
+7. colnames() to rename the columns.
+8. cbind() to take a sequence of vector, matrix or data-frame arguments and combine by columns or rows, respectively.
+9. as.character() returns a string of 1's and 0's or a character vector.
+
+Skills used for data exploration and analytics are the following -
+
+1. head() to return the first part of a vector, matrix, table, data frame or function.
+2. tail() to return the last part of a vector, matrix, table, data frame or function.
+3. summary() to produce result summaries of the results of various model fitting functions.
+4. format() to format an R object for pretty printing.
+5. diff() to return suitably lagged and iterated differences.
+6. ifelse() to return a value with the same shape as test which is filled with elements selected from either yes or no depending on whether the element of test is TRUE or FALSE.
+7. function() to create and store a function for data analysis.
+8. round() to round the values in its first argument to the specified number of decimal places (default 0).
+9. mean() is a generic function for the (trimmed) arithmetic mean.
+10. ts() to create time-series objects.
+11. rollapply() to apply a function to rolling margins of an array.
+12. merge() to merge two data frames by common columns or row names, or do other versions of database join operations.
+13. seq() to generate regular sequences.
+14. rq() to perform a quantile regression on a design matrix, x, of explanatory variables and a vector, y, of responses.
+15. lm() can be used to carry out regression, single stratum analysis of variance and analysis of covariance.
+16. Plot() to make a map of the values of a Raster* object, or make a scatterplot of their values.
+17. split() to divide the data in the vector x into the groups defined by f. 
+18. lapply() to return a list of the same length as X, each element of which is the result of applying FUN to the corresponding element of X.
+19. image_animate() manipulate or combine multiple frames of an image. 
+20. ncol() returns the number of columns.
+21. cor() computes the variance of x and the covariance or correlation of x and y.
+22. apply.monthly() applies a specified function to each distinct period in a given time series object.
+22. quantile() produces sample quantiles corresponding to the given probabilities.
+23. apply.monthly() applies a specified function to each distinct period in a given time series object.
+24. max() returns the maximum of all values in a vector by passing codemax as fn argument to univar function.
+
+Skills used in packaging and express of data in terms of graphs and tables are the following -
+
+1. ggplot()/ggplot2() to generate the graph based on the vectors.
+2. kable() to create a data table.
+3. table() returns a contingency table.
+4. xtable to create LaTeX formatted and rendered table.
+5. ggplotly() to convert a ggplot2::ggplot() object to a plotly object.
+6. autoplot.zoo() takes a zoo object and converts it into a data frame (intended for ggplot2)
+7. ggtitle() to format chart titles.
+8. ylim() to to set the limits of the y axis.
+9. coredata() to extract the core data contained in a (more complex) object and replacing it.
+10. acf() to compute (and by default plots) estimates of the autocovariance or autocorrelation function.
+11. pacf() is the function used for the partial autocorrelations.
+
+### Portfolio Weights
+
+For the working capital accounts:
+
+No constraints:
+```{r echo = FALSE}
+library(scales)
+weights[ind,]
+name <- colnames(weights)
+posn <- ifelse((weights[ind,]<0), "go short (sell)", "go long, (buy)")
+value <- percent(abs(weights[ind,]))
+weights[ind,]*1000000000
+```
+
+	•	100 million dollars denominated in USDs
+	•	Buy 1,047,480,357 in gold
+	•	Sell 58,573,572 in silver
+	•	Buy 11,093,215 in platinum
+
+
+With constraints:
+
+Constraint: Minimum Variance Portfolio
+```{r echo = FALSE}
+library(scales)
+weights[ind2,]
+name <- colnames(weights)
+posn <- ifelse((weights[ind2,]<0), "go short (sell)", "go long, (buy)")
+value <- percent(abs(weights[ind2,]))
+weights[ind2,]*1000000000
+```
+
+	•	100 million dollars denominated in USDs
+	•	Buy 801,027,560 in gold
+	•	Buy 117,617,440 in silver
+	•	Buy 316,589,880 in platinum
+
+Constraint: No Short Portfolio
+```{r echo = FALSE}
+library(scales)
+weights.x[inx,]
+name <- colnames(weights.x)
+posn <- ifelse((weights.x[inx,]<0), "go short (sell)", "go long, (buy)")
+value <- percent(abs(weights.x[inx,]))
+weights.x[inx,]*1000000000
+```
+
+invalid results
+
+
+### Business Remarks
+
+Corey Oil is a wholesaler who distributes motor oil, lubricants, and fuel. For 40 years of business development, Corey Oil has a solid foundation of a business relationship with local business in Wisconsin. As the business steadily grows, the business owner is always looking to expand its business lines or investments. Fulfilling the company's outlook,  the metal market is one of the target investment markets that the owner is interested.
+
+While understanding the metal markets, the business question has come up. How do we invest in metal tradings? To answer this business question, the financial analysis has come in place. By running different types of analysis including trend analysis, volatility analysis, and portfolio analysis, the project can address the characters of each investment subject.
+
+- The working capital account of \$100 million USD should be allocated as follows: buy \$104 million in gold, sell \$58 million in silver, buy \$11 million in platinum.
+
+- There is a strong correlation (0.79) between platinum and silver. 
+
+- Value at risk (VaR) is a measure of the risk of loss for investments. It estimates how much a set of investments might lose (with a given probability), given normal market conditions, in a set time period such as a day. While risk teaser quantile is at 75%, gold value at risk is 0.49; silver value at risk is at 0.94; platinum value at risk is at 0.7. In other words, gold has lower risk than platinum than silver.
+
+- Skewness is a measure of symmetry, or more precisely, the lack of symmetry. gold has -0.1909; silver has -0.3922; platinum has -02611. They all have negative skewness which means mean is less than mode.
+
+- Kurtosis is a measure of whether the data are heavy-tailed or light-tailed relative to a normal distribution. gold has 9.83; silver has 12.87; platinum has 13.51.  Positive kurtosis indicates a "heavy-tailed" distribution
